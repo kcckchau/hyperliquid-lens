@@ -1,0 +1,51 @@
+[package]
+name = "hyperliquid-lens"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hyperliquid-lens"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# WebSocket client (rustls avoids native-tls / openssl deps)
+tokio-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
+
+# HTTP + WebSocket server
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+
+# Database (0.7 ships with conservative deps compatible with Rust < 1.85)
+sqlx = { version = "0.7", features = ["postgres", "runtime-tokio-native-tls", "chrono", "migrate", "rust_decimal"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Logging / tracing
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Config / env
+dotenvy = "0.15"
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Utilities
+tokio-stream = { version = "0.1", features = ["sync"] }
+chrono = { version = "0.4", features = ["serde"] }
+url = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+

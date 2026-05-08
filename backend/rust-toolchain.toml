@@ -1,0 +1,4 @@
+[toolchain]
+channel = "stable"
+# Minimum required: 1.85 (edition 2024 stabilized)
+# Run `rustup update stable` to get the latest stable version
