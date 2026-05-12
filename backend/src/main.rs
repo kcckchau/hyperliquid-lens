@@ -1,11 +1,19 @@
 mod api;
 mod config;
 mod db;
+mod detection;
 mod ingester;
 
-use crate::api::routes::{get_summary, get_trades, health, ws_trades, AppState};
+use crate::api::routes::{
+    get_event_stats, get_events, get_summary, get_trades, health, ws_events, ws_trades, AppState,
+};
 use crate::config::Config;
+use crate::db::events::EventRepository;
 use crate::db::trades::TradeRepository;
+use crate::detection::outcome_tracker::resume_pending_trackers;
+use crate::detection::pipeline::spawn_all_pipelines;
+use crate::detection::types::MarketEvent;
+use crate::ingester::parser::Trade;
 use crate::ingester::ws_client::spawn_coin_ingester;
 
 use anyhow::Result;
@@ -20,10 +28,8 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load .env (ignore if not present — Docker provides env vars directly)
     let _ = dotenvy::dotenv();
 
-    // Initialise structured logging
     tracing_subscriber::registry()
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with(fmt::layer())
@@ -32,30 +38,41 @@ async fn main() -> Result<()> {
     let config = Config::from_env()?;
     info!(coins = ?config.coins, port = config.port, "Starting hyperliquid-lens");
 
-    // Database pool
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect(&config.database_url)
         .await?;
 
-    // Run pending migrations at startup
     sqlx::migrate!("./migrations").run(&pool).await?;
     info!("Database migrations applied");
 
-    // Broadcast channel: ingester → WebSocket clients
-    // 1024-message buffer per subscriber; laggy clients are dropped gracefully
-    let (broadcast_tx, _) = broadcast::channel::<ingester::parser::Trade>(1024);
-    let broadcast_tx = Arc::new(broadcast_tx);
+    // ── Broadcast channels ────────────────────────────────────────────────────
+    let (trade_tx, _) = broadcast::channel::<Trade>(1024);
+    let trade_tx = Arc::new(trade_tx);
 
-    // Spawn one ingester per coin
+    // Event channel: detection pipelines → WebSocket clients.
+    // Buffer is larger because events are rarer but clients may subscribe late.
+    let (event_tx, _) = broadcast::channel::<MarketEvent>(256);
+    let event_tx = Arc::new(event_tx);
+
+    // ── Ingesters (one per coin) ──────────────────────────────────────────────
     for coin in &config.coins {
-        spawn_coin_ingester(coin.clone(), pool.clone(), (*broadcast_tx).clone());
+        spawn_coin_ingester(coin.clone(), pool.clone(), (*trade_tx).clone());
     }
 
-    // Build Axum app
+    // ── Detection pipelines (one per coin × interval) ─────────────────────────
+    spawn_all_pipelines(&config.coins, pool.clone(), trade_tx.clone(), event_tx.clone());
+
+    // ── Resume outcome trackers for any events left in Confirming state ───────
+    // (covers the case where the process was restarted mid-observation-window)
+    resume_pending_trackers(pool.clone()).await?;
+
+    // ── Axum app ──────────────────────────────────────────────────────────────
     let state = AppState {
-        repo: TradeRepository::new(pool),
-        broadcast_tx,
+        repo: TradeRepository::new(pool.clone()),
+        event_repo: EventRepository::new(pool),
+        broadcast_tx: trade_tx,
+        event_tx,
     };
 
     let cors = CorsLayer::new()
@@ -68,6 +85,9 @@ async fn main() -> Result<()> {
         .route("/trades", get(get_trades))
         .route("/trades/summary", get(get_summary))
         .route("/ws/trades", get(ws_trades))
+        .route("/events", get(get_events))
+        .route("/events/stats", get(get_event_stats))
+        .route("/ws/events", get(ws_events))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

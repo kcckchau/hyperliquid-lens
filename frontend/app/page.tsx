@@ -5,7 +5,8 @@ import dynamic from "next/dynamic";
 import CoinSelector, { type Coin } from "@/components/CoinSelector";
 import TradeFeed from "@/components/TradeFeed";
 import StatsBar from "@/components/StatsBar";
-import { useLiveTrades } from "@/lib/ws";
+import EventFeed from "@/components/EventFeed";
+import { useLiveTrades, useMarketEvents } from "@/lib/ws";
 
 // Dynamically import the chart to avoid SSR issues with lightweight-charts
 const CandlestickChart = dynamic(() => import("@/components/CandlestickChart"), {
@@ -17,16 +18,20 @@ const CandlestickChart = dynamic(() => import("@/components/CandlestickChart"), 
   ),
 });
 
+type RightPanel = "trades" | "events";
+
 export default function DashboardPage() {
   const [coin, setCoin] = useState<Coin>("BTC");
-  const { trades, status } = useLiveTrades({ coin });
+  const [rightPanel, setRightPanel] = useState<RightPanel>("events");
+
+  const { trades, status: tradeStatus } = useLiveTrades({ coin });
+  const { events, status: eventStatus } = useMarketEvents({ coin });
 
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       {/* Top nav */}
       <header className="flex items-center justify-between px-6 py-3 border-b border-border bg-surface">
         <div className="flex items-center gap-3">
-          {/* Logo */}
           <div className="flex items-center gap-2">
             <div className="w-6 h-6 rounded bg-accent/20 border border-accent/40 flex items-center justify-center">
               <span className="text-accent text-[10px] font-bold">HL</span>
@@ -42,7 +47,6 @@ export default function DashboardPage() {
           <CoinSelector value={coin} onChange={setCoin} />
         </div>
 
-        {/* Right side meta */}
         <div className="flex items-center gap-4 text-[10px] text-text-secondary uppercase tracking-widest">
           <span>Hyperliquid DEX</span>
           <div className="w-px h-3 bg-border" />
@@ -62,9 +66,39 @@ export default function DashboardPage() {
           <CandlestickChart coin={coin} />
         </div>
 
-        {/* Trade feed — right */}
-        <div className="min-h-0">
-          <TradeFeed trades={trades} status={status} />
+        {/* Right panel — toggle between events and trades */}
+        <div className="flex flex-col min-h-0 gap-2">
+          {/* Panel toggle */}
+          <div className="flex gap-1 shrink-0">
+            <button
+              onClick={() => setRightPanel("events")}
+              className={`flex-1 text-[10px] uppercase tracking-widest py-1 rounded border transition-colors ${
+                rightPanel === "events"
+                  ? "bg-accent/20 border-accent/40 text-accent"
+                  : "bg-transparent border-border text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              Events
+            </button>
+            <button
+              onClick={() => setRightPanel("trades")}
+              className={`flex-1 text-[10px] uppercase tracking-widest py-1 rounded border transition-colors ${
+                rightPanel === "trades"
+                  ? "bg-accent/20 border-accent/40 text-accent"
+                  : "bg-transparent border-border text-text-secondary hover:text-text-primary"
+              }`}
+            >
+              Trades
+            </button>
+          </div>
+
+          <div className="flex-1 min-h-0">
+            {rightPanel === "events" ? (
+              <EventFeed events={events} status={eventStatus} />
+            ) : (
+              <TradeFeed trades={trades} status={tradeStatus} />
+            )}
+          </div>
         </div>
       </main>
 
