@@ -44,10 +44,12 @@ export async function fetchTrades(
 export async function fetchSummary(
   coin: string,
   interval: string = "1h",
+  visibleBars?: number,
   from?: number,
   to?: number
 ): Promise<SummaryResponse> {
   const params = new URLSearchParams({ coin, interval });
+  if (visibleBars) params.set("visible_bars", String(visibleBars));
   if (from) params.set("from", String(from));
   if (to) params.set("to", String(to));
 

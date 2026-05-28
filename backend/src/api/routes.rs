@@ -1,6 +1,8 @@
+use crate::chart::warmup::{merge_candles, ChartWarmupConfig, WarmupRequest};
 use crate::db::events::EventRepository;
 use crate::db::trades::TradeRepository;
 use crate::detection::types::MarketEvent;
+use crate::hyperliquid::info_client::fetch_candle_snapshot;
 use crate::ingester::parser::Trade;
 use axum::{
     extract::{
@@ -22,6 +24,7 @@ pub struct AppState {
     pub event_repo: EventRepository,
     pub broadcast_tx: Arc<broadcast::Sender<Trade>>,
     pub event_tx: Arc<broadcast::Sender<MarketEvent>>,
+    pub chart_warmup: Arc<ChartWarmupConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +83,7 @@ pub struct SummaryQuery {
     pub interval: String,
     pub from: Option<i64>,
     pub to: Option<i64>,
+    pub visible_bars: Option<usize>,
 }
 
 fn default_interval() -> String {
@@ -117,23 +121,63 @@ pub async fn get_summary(
             .into_response();
     };
 
-    match state
-        .repo
-        .ohlcv(&params.coin, interval_ms, params.from, params.to)
-        .await
-    {
-        Ok(candles) => Json(SummaryResponse {
-            coin: params.coin,
-            interval: params.interval,
-            candles,
-        })
-        .into_response(),
+    match state.repo.ohlcv(&params.coin, interval_ms, params.from, params.to).await {
+        Ok(local_candles) => {
+            let candles = if params.from.is_none() && params.to.is_none() {
+                match warm_summary_candles(
+                    state.chart_warmup.as_ref(),
+                    &params.coin,
+                    &params.interval,
+                    interval_ms,
+                    params.visible_bars,
+                    local_candles.clone(),
+                )
+                .await
+                {
+                    Ok(candles) => candles,
+                    Err(_) => local_candles,
+                }
+            } else {
+                local_candles
+            };
+
+            Json(SummaryResponse {
+                coin: params.coin,
+                interval: params.interval,
+                candles,
+            })
+            .into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() })),
         )
             .into_response(),
     }
+}
+
+async fn warm_summary_candles(
+    chart_warmup: &ChartWarmupConfig,
+    coin: &str,
+    interval: &str,
+    interval_ms: i64,
+    visible_bars: Option<usize>,
+    local_candles: Vec<crate::db::trades::OhlcvRow>,
+) -> anyhow::Result<Vec<crate::db::trades::OhlcvRow>> {
+    let plan = chart_warmup.build_plan(WarmupRequest {
+        interval,
+        visible_bars,
+        local_candle_count: local_candles.len(),
+    })?;
+
+    if !plan.needs_remote {
+        return Ok(local_candles);
+    }
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let start_time = now_ms - interval_ms * plan.remote_fetch_bars as i64;
+    let snapshot = fetch_candle_snapshot(coin, interval, start_time, now_ms).await?;
+    Ok(merge_candles(snapshot, local_candles))
 }
 
 // ---------------------------------------------------------------------------

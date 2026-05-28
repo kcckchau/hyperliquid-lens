@@ -123,7 +123,7 @@ pub struct TradeRow {
 }
 
 /// OHLCV candle returned by the summary endpoint
-#[derive(Debug, Serialize, sqlx::FromRow)]
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct OhlcvRow {
     pub bucket_ms: i64,
     pub open: Decimal,

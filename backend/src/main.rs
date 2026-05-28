@@ -1,8 +1,10 @@
 mod api;
+mod chart;
 mod config;
 mod db;
 mod detection;
 mod execution;
+mod hyperliquid;
 mod ingester;
 mod risk;
 mod setups;
@@ -78,6 +80,7 @@ async fn main() -> Result<()> {
         event_repo: EventRepository::new(pool),
         broadcast_tx: trade_tx,
         event_tx,
+        chart_warmup: Arc::new(config.chart_warmup),
     };
 
     let cors = CorsLayer::new()

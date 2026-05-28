@@ -27,6 +27,14 @@ const INTERVAL_MS: Record<Interval, number> = {
   "4h": 14_400_000,
   "1d": 86_400_000,
 };
+const DEFAULT_VISIBLE_BARS: Record<Interval, number> = {
+  "1m": 300,
+  "5m": 300,
+  "15m": 260,
+  "1h": 240,
+  "4h": 220,
+  "1d": 220,
+};
 
 function candleToChartData(c: OhlcvCandle): CandlestickData {
   return {
@@ -54,7 +62,7 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchSummary(coin, interval);
+      const data = await fetchSummary(coin, interval, DEFAULT_VISIBLE_BARS[interval]);
       const chartData = data.candles.map(candleToChartData);
       seriesRef.current?.setData(chartData);
       latestCandleRef.current = chartData.length > 0 ? chartData[chartData.length - 1] : null;
