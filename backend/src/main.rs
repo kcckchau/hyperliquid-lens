@@ -2,7 +2,12 @@ mod api;
 mod config;
 mod db;
 mod detection;
+mod execution;
 mod ingester;
+mod risk;
+mod setups;
+mod signals;
+mod trading;
 
 use crate::api::routes::{
     get_event_stats, get_events, get_summary, get_trades, health, ws_events, ws_trades, AppState,

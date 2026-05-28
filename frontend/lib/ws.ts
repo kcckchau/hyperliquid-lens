@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { startTransition, useCallback, useEffect, useRef, useState } from "react";
 
 export interface Trade {
   coin: string;
@@ -12,7 +12,7 @@ export interface Trade {
   is_liquidation: boolean;
 }
 
-type WsStatus = "connecting" | "connected" | "disconnected" | "error";
+export type WsStatus = "connecting" | "connected" | "disconnected" | "error";
 
 const WS_URL =
   process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:3001";
@@ -20,10 +20,13 @@ const WS_URL =
 const INITIAL_BACKOFF = 1_000;
 const MAX_BACKOFF = 30_000;
 const MAX_TRADES = 200;
+const MAX_EVENTS = 100;
+const FLUSH_INTERVAL_MS = 75;
 
 interface UseLiveTradesOptions {
   coin: string;
   enabled?: boolean;
+  maxItems?: number;
 }
 
 interface UseLiveTradesResult {
@@ -91,8 +94,6 @@ export interface MarketEvent {
   reclassified_from: number | null;
 }
 
-const MAX_EVENTS = 100;
-
 interface UseMarketEventsOptions {
   coin: string;
   enabled?: boolean;
@@ -114,6 +115,8 @@ export function useMarketEvents({
   const wsRef = useRef<WebSocket | null>(null);
   const backoffRef = useRef(INITIAL_BACKOFF);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingEventsRef = useRef<MarketEvent[]>([]);
   const enabledRef = useRef(enabled);
   const coinRef = useRef(coin);
 
@@ -121,6 +124,25 @@ export function useMarketEvents({
   coinRef.current = coin;
 
   const clearEvents = useCallback(() => setEvents([]), []);
+
+  const flushEvents = useCallback(() => {
+    flushRef.current = null;
+    const pending = pendingEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEventsRef.current = [];
+
+    startTransition(() => {
+      setEvents((prev) => {
+        const merged = dedupeAndSortEvents([...pending, ...prev]);
+        return merged.length > MAX_EVENTS ? merged.slice(0, MAX_EVENTS) : merged;
+      });
+    });
+  }, []);
+
+  const scheduleEventFlush = useCallback(() => {
+    if (flushRef.current) return;
+    flushRef.current = setTimeout(flushEvents, FLUSH_INTERVAL_MS);
+  }, [flushEvents]);
 
   const connect = useCallback(() => {
     if (!enabledRef.current) return;
@@ -139,10 +161,8 @@ export function useMarketEvents({
     ws.onmessage = (event: MessageEvent<string>) => {
       try {
         const mEvent: MarketEvent = JSON.parse(event.data);
-        setEvents((prev) => {
-          const next = [mEvent, ...prev];
-          return next.length > MAX_EVENTS ? next.slice(0, MAX_EVENTS) : next;
-        });
+        pendingEventsRef.current.push(mEvent);
+        scheduleEventFlush();
       } catch {
         // malformed message — ignore
       }
@@ -162,6 +182,7 @@ export function useMarketEvents({
 
   useEffect(() => {
     setEvents([]);
+    pendingEventsRef.current = [];
     if (wsRef.current) {
       wsRef.current.onclose = null;
       wsRef.current.close();
@@ -172,6 +193,7 @@ export function useMarketEvents({
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (flushRef.current) clearTimeout(flushRef.current);
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
@@ -189,6 +211,7 @@ export function useMarketEvents({
 export function useLiveTrades({
   coin,
   enabled = true,
+  maxItems = MAX_TRADES,
 }: UseLiveTradesOptions): UseLiveTradesResult {
   const [trades, setTrades] = useState<Trade[]>([]);
   const [status, setStatus] = useState<WsStatus>("disconnected");
@@ -196,14 +219,39 @@ export function useLiveTrades({
   const wsRef = useRef<WebSocket | null>(null);
   const backoffRef = useRef(INITIAL_BACKOFF);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingTradesRef = useRef<Trade[]>([]);
   const enabledRef = useRef(enabled);
   const coinRef = useRef(coin);
+  const maxItemsRef = useRef(maxItems);
 
   // Keep refs in sync so the closure always reads the latest value
   enabledRef.current = enabled;
   coinRef.current = coin;
+  maxItemsRef.current = maxItems;
 
   const clearTrades = useCallback(() => setTrades([]), []);
+
+  const flushTrades = useCallback(() => {
+    flushRef.current = null;
+    const pending = pendingTradesRef.current;
+    if (pending.length === 0) return;
+    pendingTradesRef.current = [];
+
+    startTransition(() => {
+      setTrades((prev) => {
+        const merged = dedupeAndSortTrades([...pending, ...prev]);
+        return merged.length > maxItemsRef.current
+          ? merged.slice(0, maxItemsRef.current)
+          : merged;
+      });
+    });
+  }, []);
+
+  const scheduleTradeFlush = useCallback(() => {
+    if (flushRef.current) return;
+    flushRef.current = setTimeout(flushTrades, FLUSH_INTERVAL_MS);
+  }, [flushTrades]);
 
   const connect = useCallback(() => {
     if (!enabledRef.current) return;
@@ -222,10 +270,8 @@ export function useLiveTrades({
     ws.onmessage = (event: MessageEvent<string>) => {
       try {
         const trade: Trade = JSON.parse(event.data);
-        setTrades((prev) => {
-          const next = [trade, ...prev];
-          return next.length > MAX_TRADES ? next.slice(0, MAX_TRADES) : next;
-        });
+        pendingTradesRef.current.push(trade);
+        scheduleTradeFlush();
       } catch {
         // malformed message — ignore
       }
@@ -250,6 +296,7 @@ export function useLiveTrades({
   useEffect(() => {
     // Reset and reconnect when the coin changes
     setTrades([]);
+    pendingTradesRef.current = [];
     if (wsRef.current) {
       wsRef.current.onclose = null; // prevent auto-reconnect on intentional close
       wsRef.current.close();
@@ -263,6 +310,7 @@ export function useLiveTrades({
 
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
+      if (flushRef.current) clearTimeout(flushRef.current);
       if (wsRef.current) {
         wsRef.current.onclose = null;
         wsRef.current.close();
@@ -271,4 +319,26 @@ export function useLiveTrades({
   }, [coin, enabled, connect]);
 
   return { trades, status, clearTrades };
+}
+
+function dedupeAndSortTrades(trades: Trade[]): Trade[] {
+  const byHash = new Map<string, Trade>();
+  for (const trade of trades) {
+    byHash.set(trade.trade_hash, trade);
+  }
+
+  return Array.from(byHash.values()).sort((a, b) => {
+    if (b.timestamp_ms !== a.timestamp_ms) return b.timestamp_ms - a.timestamp_ms;
+    return b.trade_hash.localeCompare(a.trade_hash);
+  });
+}
+
+function dedupeAndSortEvents(events: MarketEvent[]): MarketEvent[] {
+  const byKey = new Map<string, MarketEvent>();
+  for (const event of events) {
+    const key = event.id !== null ? `id:${event.id}` : `${event.coin}:${event.interval}:${event.event_ts_ms}:${event.event_type}`;
+    byKey.set(key, event);
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => b.event_ts_ms - a.event_ts_ms);
 }

@@ -10,6 +10,7 @@ import {
   CrosshairMode,
 } from "lightweight-charts";
 import { fetchSummary, type OhlcvCandle } from "@/lib/api";
+import { useLiveTrades } from "@/lib/ws";
 import { BarChart2, RefreshCw } from "lucide-react";
 
 interface CandlestickChartProps {
@@ -18,6 +19,14 @@ interface CandlestickChartProps {
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
 type Interval = (typeof INTERVALS)[number];
+const INTERVAL_MS: Record<Interval, number> = {
+  "1m": 60_000,
+  "5m": 300_000,
+  "15m": 900_000,
+  "1h": 3_600_000,
+  "4h": 14_400_000,
+  "1d": 86_400_000,
+};
 
 function candleToChartData(c: OhlcvCandle): CandlestickData {
   return {
@@ -33,10 +42,13 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const latestCandleRef = useRef<CandlestickData | null>(null);
 
   const [interval, setChartInterval] = useState<Interval>("1h");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { trades } = useLiveTrades({ coin, maxItems: 1 });
+  const latestTrade = trades[0];
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -45,6 +57,7 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
       const data = await fetchSummary(coin, interval);
       const chartData = data.candles.map(candleToChartData);
       seriesRef.current?.setData(chartData);
+      latestCandleRef.current = chartData.length > 0 ? chartData[chartData.length - 1] : null;
       chartRef.current?.timeScale().fitContent();
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load chart data");
@@ -126,6 +139,44 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
     const id = setInterval(loadData, 30_000);
     return () => clearInterval(id);
   }, [loadData]);
+
+  useEffect(() => {
+    if (!latestTrade || !seriesRef.current) return;
+
+    const price = parseFloat(latestTrade.price);
+    if (Number.isNaN(price)) return;
+
+    const bucketMs =
+      Math.floor(latestTrade.timestamp_ms / INTERVAL_MS[interval]) * INTERVAL_MS[interval];
+    const bucketSeconds = bucketMs / 1000;
+    const current = latestCandleRef.current;
+
+    if (!current || Number(current.time) < bucketSeconds) {
+      const nextCandle: CandlestickData = {
+        time: bucketSeconds as CandlestickData["time"],
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+      };
+      latestCandleRef.current = nextCandle;
+      seriesRef.current.update(nextCandle);
+      return;
+    }
+
+    if (Number(current.time) > bucketSeconds) {
+      return;
+    }
+
+    const updatedCandle: CandlestickData = {
+      ...current,
+      high: Math.max(current.high, price),
+      low: Math.min(current.low, price),
+      close: price,
+    };
+    latestCandleRef.current = updatedCandle;
+    seriesRef.current.update(updatedCandle);
+  }, [interval, latestTrade]);
 
   return (
     <div className="flex flex-col h-full bg-surface border border-border rounded overflow-hidden">

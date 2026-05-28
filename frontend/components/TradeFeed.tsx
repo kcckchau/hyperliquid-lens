@@ -1,13 +1,13 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import type { Trade } from "@/lib/ws";
+import { memo, useDeferredValue } from "react";
+import type { Trade, WsStatus } from "@/lib/ws";
 import { formatPrice, formatSize, formatTime } from "@/lib/api";
 import { Zap } from "lucide-react";
 
 interface TradeFeedProps {
   trades: Trade[];
-  status: "connecting" | "connected" | "disconnected" | "error";
+  status: WsStatus;
 }
 
 const STATUS_CONFIG = {
@@ -18,15 +18,8 @@ const STATUS_CONFIG = {
 };
 
 export default function TradeFeed({ trades, status }: TradeFeedProps) {
-  const listRef = useRef<HTMLDivElement>(null);
   const statusCfg = STATUS_CONFIG[status];
-
-  // Auto-scroll to top when new trades arrive (newest at top)
-  useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = 0;
-    }
-  }, [trades.length]);
+  const deferredTrades = useDeferredValue(trades);
 
   return (
     <div className="flex flex-col h-full bg-surface border border-border rounded overflow-hidden">
@@ -53,15 +46,15 @@ export default function TradeFeed({ trades, status }: TradeFeedProps) {
       </div>
 
       {/* Trades list */}
-      <div ref={listRef} className="flex-1 overflow-y-auto">
-        {trades.length === 0 ? (
+      <div className="flex-1 overflow-y-auto">
+        {deferredTrades.length === 0 ? (
           <div className="flex items-center justify-center h-full">
             <span className="text-text-secondary text-xs">
               {status === "connecting" ? "Connecting to feed…" : "Waiting for trades…"}
             </span>
           </div>
         ) : (
-          trades.map((trade) => (
+          deferredTrades.map((trade) => (
             <TradeRow key={trade.trade_hash} trade={trade} />
           ))
         )}
@@ -70,14 +63,14 @@ export default function TradeFeed({ trades, status }: TradeFeedProps) {
       {/* Footer count */}
       <div className="px-4 py-1.5 border-t border-border">
         <span className="text-text-secondary text-[10px]">
-          {trades.length} recent trades
+          {deferredTrades.length} recent trades
         </span>
       </div>
     </div>
   );
 }
 
-function TradeRow({ trade }: { trade: Trade }) {
+const TradeRow = memo(function TradeRow({ trade }: { trade: Trade }) {
   const isBuy = trade.side === "B";
 
   return (
@@ -109,4 +102,4 @@ function TradeRow({ trade }: { trade: Trade }) {
       </span>
     </div>
   );
-}
+});

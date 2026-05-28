@@ -1,5 +1,5 @@
 # ── Build stage ──────────────────────────────────────────────────────────────
-FROM rust:1.78-slim-bookworm AS builder
+FROM rust:1.86-slim-bookworm AS builder
 
 WORKDIR /app
 
@@ -9,13 +9,8 @@ RUN apt-get update && apt-get install -y \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Cache dependencies layer
-COPY Cargo.toml Cargo.lock* ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-RUN cargo build --release 2>/dev/null || true
-RUN rm -rf src
-
 # Build actual source
+COPY Cargo.toml Cargo.lock* ./
 COPY src ./src
 COPY migrations ./migrations
 RUN cargo build --release

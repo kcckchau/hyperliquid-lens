@@ -43,9 +43,9 @@ thiserror = "1"
 tokio-stream = { version = "0.1", features = ["sync"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
+uuid = { version = "1", features = ["serde", "v4"] }
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-
