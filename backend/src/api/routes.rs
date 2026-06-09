@@ -1,3 +1,4 @@
+use crate::backfill::run_backfill;
 use crate::chart::warmup::{merge_candles, ChartWarmupConfig, WarmupRequest};
 use crate::db::events::EventRepository;
 use crate::db::trades::TradeRepository;
@@ -7,12 +8,14 @@ use crate::ingester::parser::Trade;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Json as AxumJson, Query, State,
     },
     http::StatusCode,
     response::{IntoResponse, Json},
 };
+use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use tracing::{debug, info};
@@ -20,6 +23,7 @@ use tracing::{debug, info};
 /// Shared application state injected into every handler
 #[derive(Clone)]
 pub struct AppState {
+    pub pool: PgPool,
     pub repo: TradeRepository,
     pub event_repo: EventRepository,
     pub broadcast_tx: Arc<broadcast::Sender<Trade>>,
@@ -124,6 +128,7 @@ pub async fn get_summary(
     match state.repo.ohlcv(&params.coin, interval_ms, params.from, params.to).await {
         Ok(local_candles) => {
             let candles = if params.from.is_none() && params.to.is_none() {
+                // Live mode: fill recent gaps from HL API.
                 match warm_summary_candles(
                     state.chart_warmup.as_ref(),
                     &params.coin,
@@ -135,6 +140,13 @@ pub async fn get_summary(
                 .await
                 {
                     Ok(candles) => candles,
+                    Err(_) => local_candles,
+                }
+            } else if let (Some(from), Some(to)) = (params.from, params.to) {
+                // Historical date range: fetch from HL API and merge with any
+                // local trades so the chart always shows a full picture.
+                match fetch_candle_snapshot(&params.coin, &params.interval, from, to).await {
+                    Ok(remote) => merge_candles(remote, local_candles),
                     Err(_) => local_candles,
                 }
             } else {
@@ -248,6 +260,8 @@ pub struct EventsQuery {
     pub interval: Option<String>,
     pub event_type: Option<String>,
     pub lifecycle: Option<String>,
+    /// Filter by source: "live" or "backfill"
+    pub source: Option<String>,
     pub from: Option<i64>,
     pub to: Option<i64>,
     #[serde(default = "default_limit")]
@@ -266,6 +280,7 @@ pub async fn get_events(
             params.interval.as_deref(),
             params.event_type.as_deref(),
             params.lifecycle.as_deref(),
+            params.source.as_deref(),
             params.from,
             params.to,
             limit,
@@ -365,4 +380,60 @@ async fn handle_ws_events(mut socket: WebSocket, state: AppState, coin: String) 
     }
 
     info!(coin = %coin, "Events WS client disconnected");
+}
+
+// ---------------------------------------------------------------------------
+// POST /backfill — run historical detection for a coin on a given UTC date
+// ---------------------------------------------------------------------------
+// Body: { "coin": "BTC", "date": "2025-01-15" }
+// Response: BackfillSummary JSON with per-interval event counts.
+//
+// Re-running for the same coin + date is idempotent: existing backfill events
+// for that day are deleted first.
+//
+// Note: cascades are not detected because OHLCV snapshots have no per-trade
+// liquidation counts. Only liquidity sweeps are produced.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct BackfillRequest {
+    pub coin: String,
+    /// UTC date to backfill in "YYYY-MM-DD" format.
+    pub date: String,
+}
+
+pub async fn post_backfill(
+    State(state): State<AppState>,
+    AxumJson(req): AxumJson<BackfillRequest>,
+) -> impl IntoResponse {
+    let date = match NaiveDate::parse_from_str(&req.date, "%Y-%m-%d") {
+        Ok(d) => d,
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": "invalid date, expected YYYY-MM-DD" })),
+            )
+                .into_response();
+        }
+    };
+
+    let coin = req.coin.trim().to_uppercase();
+    if coin.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "coin must not be empty" })),
+        )
+            .into_response();
+    }
+
+    let event_tx = (*state.event_tx).clone();
+
+    match run_backfill(&coin, date, state.pool.clone(), event_tx).await {
+        Ok(summary) => Json(summary).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }

@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { ChevronDown } from "lucide-react";
 
-const COINS = ["BTC", "ETH", "SOL"] as const;
+export const COINS = ["BTC", "ETH", "SOL", "HYPE"] as const;
 export type Coin = (typeof COINS)[number];
 
 interface CoinSelectorProps {

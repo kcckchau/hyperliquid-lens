@@ -23,6 +23,10 @@ build:
 up:
 	docker compose up -d
 
+# Rebuild images and restart full stack
+rebuild:
+	docker compose down && docker compose build && docker compose up -d
+
 # Stop full stack
 down:
 	docker compose down

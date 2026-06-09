@@ -21,7 +21,7 @@ impl Config {
             .context("PORT must be a valid port number")?;
 
         let coins = std::env::var("COINS")
-            .unwrap_or_else(|_| "BTC,ETH,SOL".to_string())
+            .unwrap_or_else(|_| "BTC,ETH,SOL,HYPE".to_string())
             .split(',')
             .map(|s| s.trim().to_uppercase())
             .filter(|s| !s.is_empty())

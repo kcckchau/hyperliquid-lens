@@ -1,6 +1,6 @@
 use crate::detection::types::{
-    CascadeDirection, EventLifecycle, EventType, HtfLevel, MarketEvent, OutcomeDetail, OutcomeKind,
-    SweepDirection,
+    CascadeDirection, EventLifecycle, EventSource, EventType, HtfLevel, MarketEvent, OutcomeDetail,
+    OutcomeKind, SweepDirection,
 };
 use anyhow::Result;
 use rust_decimal::Decimal;
@@ -29,14 +29,14 @@ impl EventRepository {
                 cascade_direction, cascade_start_price, liq_count_total,
                 candles_sustained, volume_acceleration,
                 event_ts_ms, candle_volume, htf_confluence,
-                outcome, reclassified_from
+                outcome, reclassified_from, source
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7, $8, $9,
                 $10, $11, $12,
                 $13, $14,
                 $15, $16, $17,
-                $18, $19
+                $18, $19, $20
             )
             RETURNING id
             "#,
@@ -60,6 +60,7 @@ impl EventRepository {
         .bind(htf_json)
         .bind(&event.outcome)
         .bind(event.reclassified_from)
+        .bind(event.source.as_str())
         .fetch_one(&self.pool)
         .await?;
 
@@ -105,6 +106,25 @@ impl EventRepository {
         Ok(())
     }
 
+    /// Delete all backfill events for a coin within a timestamp range.
+    /// Used to make repeated backfill runs idempotent.
+    pub async fn delete_backfill_range(
+        &self,
+        coin: &str,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "DELETE FROM market_events WHERE coin = $1 AND source = 'backfill' AND event_ts_ms >= $2 AND event_ts_ms < $3",
+        )
+        .bind(coin)
+        .bind(from_ms)
+        .bind(to_ms)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     /// Fetch all events still in `Confirming` state (for restart recovery).
     pub async fn fetch_confirming(&self) -> Result<Vec<MarketEvent>> {
         let rows = sqlx::query_as::<_, EventRow>(
@@ -122,6 +142,7 @@ impl EventRepository {
         interval: Option<&str>,
         event_type: Option<&str>,
         lifecycle: Option<&str>,
+        source: Option<&str>,
         from_ms: Option<i64>,
         to_ms: Option<i64>,
         limit: i64,
@@ -133,16 +154,18 @@ impl EventRepository {
               AND ($2::TEXT IS NULL OR interval = $2)
               AND ($3::TEXT IS NULL OR event_type::TEXT = $3)
               AND ($4::TEXT IS NULL OR lifecycle::TEXT = $4)
-              AND ($5::BIGINT IS NULL OR event_ts_ms >= $5)
-              AND ($6::BIGINT IS NULL OR event_ts_ms <= $6)
+              AND ($5::TEXT IS NULL OR source = $5)
+              AND ($6::BIGINT IS NULL OR event_ts_ms >= $6)
+              AND ($7::BIGINT IS NULL OR event_ts_ms <= $7)
             ORDER BY event_ts_ms DESC
-            LIMIT $7
+            LIMIT $8
             "#,
         )
         .bind(coin)
         .bind(interval)
         .bind(event_type)
         .bind(lifecycle)
+        .bind(source)
         .bind(from_ms)
         .bind(to_ms)
         .bind(limit)
@@ -212,6 +235,7 @@ pub struct EventRow {
     pub outcome_resolved_ts: Option<i64>,
     pub regime: Option<String>,
     pub reclassified_from: Option<i64>,
+    pub source: String,
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -256,6 +280,7 @@ impl From<EventRow> for MarketEvent {
             outcome_resolved_ts: r.outcome_resolved_ts,
             regime: None,
             reclassified_from: r.reclassified_from,
+            source: EventSource::from(r.source.as_str()),
         }
     }
 }

@@ -2,6 +2,42 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 
 // ---------------------------------------------------------------------------
+// EventSource — distinguishes live-detected events from historical backfills.
+// Stored as TEXT in the DB (not a PG enum) to avoid migration churn.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSource {
+    Live,
+    Backfill,
+}
+
+impl Default for EventSource {
+    fn default() -> Self {
+        EventSource::Live
+    }
+}
+
+impl EventSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EventSource::Live => "live",
+            EventSource::Backfill => "backfill",
+        }
+    }
+}
+
+impl From<&str> for EventSource {
+    fn from(s: &str) -> Self {
+        match s {
+            "backfill" => EventSource::Backfill,
+            _ => EventSource::Live,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Core enums — all map directly to PostgreSQL enum types in migration 002.
 // The rename_all = "snake_case" attribute makes sqlx encode Rust variants
 // into the exact lowercase_snake strings the DB expects.
@@ -166,6 +202,9 @@ pub struct MarketEvent {
     pub regime: Option<MarketRegime>,
     /// ID of the event this was reclassified from, if applicable.
     pub reclassified_from: Option<i64>,
+
+    /// Whether this event was detected live or produced by a historical backfill.
+    pub source: EventSource,
 }
 
 impl MarketEvent {
@@ -205,6 +244,7 @@ impl MarketEvent {
             outcome_resolved_ts: None,
             regime: None,
             reclassified_from: None,
+            source: EventSource::Live,
         }
     }
 
@@ -244,6 +284,7 @@ impl MarketEvent {
             outcome_resolved_ts: None,
             regime: None,
             reclassified_from: None,
+            source: EventSource::Live,
         }
     }
 }

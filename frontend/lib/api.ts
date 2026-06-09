@@ -81,3 +81,71 @@ export function formatTime(timestamp_ms: number): string {
     second: "2-digit",
   });
 }
+
+// ---------------------------------------------------------------------------
+// Backfill
+// ---------------------------------------------------------------------------
+
+export interface BackfillIntervalSummary {
+  interval: string;
+  sweeps: number;
+  cascades: number;
+}
+
+export interface BackfillSummary {
+  coin: string;
+  date: string;
+  events_detected: number;
+  by_interval: BackfillIntervalSummary[];
+  notes: string[];
+}
+
+export async function runBackfill(
+  coin: string,
+  date: string
+): Promise<BackfillSummary> {
+  const res = await fetch(`${API_URL}/backfill`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ coin, date }),
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error((err as { error?: string }).error ?? `Backfill failed: ${res.statusText}`);
+  }
+  return res.json();
+}
+
+export interface HistoricalEvent {
+  id: number;
+  coin: string;
+  interval: string;
+  event_type: "liquidity_sweep" | "liquidation_cascade";
+  sweep_direction: "bullish" | "bearish" | null;
+  level_price: string | null;
+  sweep_extreme: string | null;
+  wick_pct: string | null;
+  close_price: string | null;
+  cascade_direction: "long_liq" | "short_liq" | null;
+  cascade_start_price: string | null;
+  candles_sustained: number | null;
+  event_ts_ms: number;
+  htf_confluence: Array<{ interval: string; level_price: string; age_candles: number }>;
+  outcome: string;
+  source: string;
+}
+
+export async function fetchEvents(
+  coin: string,
+  opts: { source?: string; from?: number; to?: number; limit?: number } = {}
+): Promise<HistoricalEvent[]> {
+  const params = new URLSearchParams({ coin });
+  if (opts.source) params.set("source", opts.source);
+  if (opts.from != null) params.set("from", String(opts.from));
+  if (opts.to != null) params.set("to", String(opts.to));
+  params.set("limit", String(opts.limit ?? 200));
+
+  const res = await fetch(`${API_URL}/events?${params}`);
+  if (!res.ok) throw new Error(`Failed to fetch events: ${res.statusText}`);
+  return res.json();
+}

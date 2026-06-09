@@ -1,4 +1,5 @@
 mod api;
+mod backfill;
 mod chart;
 mod config;
 mod db;
@@ -12,7 +13,8 @@ mod signals;
 mod trading;
 
 use crate::api::routes::{
-    get_event_stats, get_events, get_summary, get_trades, health, ws_events, ws_trades, AppState,
+    get_event_stats, get_events, get_summary, get_trades, health, post_backfill, ws_events,
+    ws_trades, AppState,
 };
 use crate::config::Config;
 use crate::db::events::EventRepository;
@@ -24,7 +26,10 @@ use crate::ingester::parser::Trade;
 use crate::ingester::ws_client::spawn_coin_ingester;
 
 use anyhow::Result;
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use sqlx::postgres::PgPoolOptions;
 use std::sync::Arc;
 use tokio::sync::broadcast;
@@ -76,6 +81,7 @@ async fn main() -> Result<()> {
 
     // ── Axum app ──────────────────────────────────────────────────────────────
     let state = AppState {
+        pool: pool.clone(),
         repo: TradeRepository::new(pool.clone()),
         event_repo: EventRepository::new(pool),
         broadcast_tx: trade_tx,
@@ -96,6 +102,7 @@ async fn main() -> Result<()> {
         .route("/events", get(get_events))
         .route("/events/stats", get(get_event_stats))
         .route("/ws/events", get(ws_events))
+        .route("/backfill", post(post_backfill))
         .with_state(state)
         .layer(TraceLayer::new_for_http())
         .layer(cors);

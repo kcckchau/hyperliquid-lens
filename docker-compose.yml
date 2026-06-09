@@ -29,7 +29,7 @@ services:
       DATABASE_URL: postgres://hyperliquid:hyperliquid@postgres:5432/hyperliquid_lens
       RUST_LOG: info
       PORT: "3001"
-      COINS: "BTC,ETH,SOL"
+      COINS: "BTC,ETH,SOL,HYPE"
     depends_on:
       postgres:
         condition: service_healthy

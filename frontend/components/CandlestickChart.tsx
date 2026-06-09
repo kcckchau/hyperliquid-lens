@@ -15,6 +15,10 @@ import { BarChart2, RefreshCw } from "lucide-react";
 
 interface CandlestickChartProps {
   coin: string;
+  /** When set, the chart shows this UTC day instead of live data. */
+  dateRange?: { from: number; to: number } | null;
+  /** Called when the user clicks the "→ LIVE" button to return to live mode. */
+  onBackToLive?: () => void;
 }
 
 const INTERVALS = ["1m", "5m", "15m", "1h", "4h", "1d"] as const;
@@ -46,7 +50,7 @@ function candleToChartData(c: OhlcvCandle): CandlestickData {
   };
 }
 
-export default function CandlestickChart({ coin }: CandlestickChartProps) {
+export default function CandlestickChart({ coin, dateRange, onBackToLive }: CandlestickChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
@@ -62,7 +66,9 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchSummary(coin, interval, DEFAULT_VISIBLE_BARS[interval]);
+      const data = dateRange
+        ? await fetchSummary(coin, interval, undefined, dateRange.from, dateRange.to)
+        : await fetchSummary(coin, interval, DEFAULT_VISIBLE_BARS[interval]);
       const chartData = data.candles.map(candleToChartData);
       seriesRef.current?.setData(chartData);
       latestCandleRef.current = chartData.length > 0 ? chartData[chartData.length - 1] : null;
@@ -72,7 +78,7 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
     } finally {
       setLoading(false);
     }
-  }, [coin, interval]);
+  }, [coin, interval, dateRange]);
 
   // Initialise chart once on mount
   useEffect(() => {
@@ -142,14 +148,15 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
     loadData();
   }, [loadData]);
 
-  // Auto-refresh every 30s
+  // Auto-refresh every 30s — only in live mode
   useEffect(() => {
+    if (dateRange) return;
     const id = setInterval(loadData, 30_000);
     return () => clearInterval(id);
-  }, [loadData]);
+  }, [loadData, dateRange]);
 
   useEffect(() => {
-    if (!latestTrade || !seriesRef.current) return;
+    if (dateRange || !latestTrade || !seriesRef.current) return;
 
     const price = parseFloat(latestTrade.price);
     if (Number.isNaN(price)) return;
@@ -198,6 +205,21 @@ export default function CandlestickChart({ coin }: CandlestickChartProps) {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Historical mode indicator */}
+          {dateRange && (
+            <>
+              <span className="text-[10px] text-amber-400 font-mono tabular-nums">
+                {new Date(dateRange.from).toISOString().slice(0, 10)}
+              </span>
+              <button
+                onClick={onBackToLive}
+                className="text-[10px] px-2 py-0.5 rounded border border-accent/40 text-accent bg-accent/10 hover:bg-accent/20 transition-colors"
+              >
+                → LIVE
+              </button>
+              <div className="w-px h-3 bg-border" />
+            </>
+          )}
           {/* Interval tabs */}
           <div className="flex bg-background rounded border border-border">
             {INTERVALS.map((iv) => (
