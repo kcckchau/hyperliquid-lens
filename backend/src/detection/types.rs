@@ -200,6 +200,9 @@ pub struct MarketEvent {
 
     // --- Context ---
     pub regime: Option<MarketRegime>,
+    /// Regime context at the time of detection (1h + 4h snapshot as JSON).
+    /// Populated by the detection pipeline from regime_snapshots.
+    pub regime_context: Option<serde_json::Value>,
     /// ID of the event this was reclassified from, if applicable.
     pub reclassified_from: Option<i64>,
 
@@ -243,6 +246,7 @@ impl MarketEvent {
             outcome_detail: None,
             outcome_resolved_ts: None,
             regime: None,
+            regime_context: None,
             reclassified_from: None,
             source: EventSource::Live,
         }
@@ -283,6 +287,7 @@ impl MarketEvent {
             outcome_detail: None,
             outcome_resolved_ts: None,
             regime: None,
+            regime_context: None,
             reclassified_from: None,
             source: EventSource::Live,
         }

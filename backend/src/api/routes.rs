@@ -2,6 +2,7 @@ use crate::backfill::run_backfill;
 use crate::chart::warmup::{merge_candles, ChartWarmupConfig, WarmupRequest};
 use crate::db::events::EventRepository;
 use crate::db::heartbeat::HeartbeatRepository;
+use crate::db::regime::RegimeRepository;
 use crate::db::trades::TradeRepository;
 use crate::detection::types::MarketEvent;
 use crate::hyperliquid::info_client::fetch_candle_snapshot;
@@ -68,9 +69,34 @@ pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
         "degraded"
     };
 
+    // Regime: group by coin → { tf_1h, tf_4h, alignment }
+    let regime_repo = RegimeRepository::new(state.pool.clone());
+    let regimes = match regime_repo.fetch_all().await {
+        Ok(rows) => {
+            let mut by_coin: serde_json::Map<String, serde_json::Value> =
+                serde_json::Map::new();
+            for r in rows {
+                let conf: f64 = r.confidence.to_string().parse().unwrap_or(0.0);
+                let entry = by_coin.entry(r.coin.clone()).or_insert_with(|| {
+                    serde_json::json!({})
+                });
+                let key = format!("tf_{}", r.interval_label);
+                entry[key] = serde_json::json!({
+                    "regime": r.regime,
+                    "confidence": (conf * 1000.0).round() / 1000.0,
+                    "candles_in_regime": r.candles_in_regime,
+                    "pending": r.pending_regime,
+                });
+            }
+            serde_json::Value::Object(by_coin)
+        }
+        Err(_) => serde_json::json!({}),
+    };
+
     Json(serde_json::json!({
         "status": status,
         "feeds": feeds,
+        "regimes": regimes,
     }))
 }
 

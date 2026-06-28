@@ -1,4 +1,5 @@
 use crate::db::events::EventRepository;
+use crate::db::regime::RegimeRepository;
 use crate::detection::candle_builder::CandleBuilder;
 use crate::detection::cascade_detector::CascadeDetector;
 use crate::detection::interval_config::{all_configs, IntervalConfig};
@@ -51,6 +52,7 @@ fn spawn_detection_pipeline(
         info!(coin = %coin, interval = %cfg.label, "Detection pipeline started");
 
         let repo = EventRepository::new(pool.clone());
+        let regime_repo = RegimeRepository::new(pool.clone());
         let mut candle_builder = CandleBuilder::new(cfg.interval_ms);
         let mut swing_detector = SwingDetector::new(&cfg);
         let mut sweep_detector = SweepDetector::new(&cfg);
@@ -95,6 +97,8 @@ fn spawn_detection_pipeline(
                             );
                             event.htf_confluence = htf;
                             event.lifecycle = EventLifecycle::Confirming;
+                            event.regime_context =
+                                fetch_regime_context(&regime_repo, &coin).await;
 
                             match repo.insert(&event).await {
                                 Ok(id) => {
@@ -128,6 +132,8 @@ fn spawn_detection_pipeline(
                                 raw.start_ts_ms,
                             );
                             event.lifecycle = EventLifecycle::Confirming;
+                            event.regime_context =
+                                fetch_regime_context(&regime_repo, &coin).await;
 
                             match repo.insert(&event).await {
                                 Ok(id) => {
@@ -164,6 +170,36 @@ fn spawn_detection_pipeline(
             }
         }
     });
+}
+
+/// Fetch current 1h + 4h regime snapshots for a coin and return as JSON.
+/// Returns None silently if regime engine hasn't run yet.
+async fn fetch_regime_context(
+    repo: &RegimeRepository,
+    coin: &str,
+) -> Option<serde_json::Value> {
+    let r1h = repo.fetch_current(coin, "1h").await.ok()??;
+    let r4h = repo.fetch_current(coin, "4h").await.ok()??;
+
+    let alignment = match (r1h.regime.as_str(), r4h.regime.as_str()) {
+        ("TREND_UP", "TREND_UP") => "ALIGNED_BULLISH",
+        ("TREND_DOWN", "TREND_DOWN") => "ALIGNED_BEARISH",
+        ("LOW_VOL_COMPRESSION", "LOW_VOL_COMPRESSION") => "COMPRESSING",
+        ("HIGH_VOL_CHOP", _) | (_, "HIGH_VOL_CHOP") => "CHOPPY",
+        ("RANGE", "RANGE") => "RANGING",
+        _ => "MIXED",
+    };
+
+    let conf1h: f64 = r1h.confidence.to_string().parse().unwrap_or(0.0);
+    let conf4h: f64 = r4h.confidence.to_string().parse().unwrap_or(0.0);
+
+    Some(serde_json::json!({
+        "tf_1h": r1h.regime,
+        "tf_4h": r4h.regime,
+        "confidence_1h": (conf1h * 1000.0).round() / 1000.0,
+        "confidence_4h": (conf4h * 1000.0).round() / 1000.0,
+        "alignment": alignment,
+    }))
 }
 
 /// Look up swing levels on higher timeframes that are within `proximity_frac`

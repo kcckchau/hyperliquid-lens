@@ -29,14 +29,14 @@ impl EventRepository {
                 cascade_direction, cascade_start_price, liq_count_total,
                 candles_sustained, volume_acceleration,
                 event_ts_ms, candle_volume, htf_confluence,
-                outcome, reclassified_from, source
+                outcome, reclassified_from, source, regime_context
             ) VALUES (
                 $1, $2, $3, $4,
                 $5, $6, $7, $8, $9,
                 $10, $11, $12,
                 $13, $14,
                 $15, $16, $17,
-                $18, $19, $20
+                $18, $19, $20, $21
             )
             RETURNING id
             "#,
@@ -61,6 +61,7 @@ impl EventRepository {
         .bind(&event.outcome)
         .bind(event.reclassified_from)
         .bind(event.source.as_str())
+        .bind(&event.regime_context)
         .fetch_one(&self.pool)
         .await?;
 
@@ -279,6 +280,7 @@ impl From<EventRow> for MarketEvent {
             outcome_detail,
             outcome_resolved_ts: r.outcome_resolved_ts,
             regime: None,
+            regime_context: None,
             reclassified_from: r.reclassified_from,
             source: EventSource::from(r.source.as_str()),
         }

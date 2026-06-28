@@ -19,6 +19,7 @@ use crate::api::routes::{
 };
 use crate::alert::spawn_alert_task;
 use crate::backfill::backfill_gap;
+use crate::detection::regime_engine::spawn_regime_engine;
 use crate::config::Config;
 use crate::db::events::EventRepository;
 use crate::db::heartbeat::HeartbeatRepository;
@@ -171,6 +172,9 @@ async fn main() -> Result<()> {
             }
         });
     }
+
+    // ── Regime engine ─────────────────────────────────────────────────────────
+    spawn_regime_engine(config.coins.clone(), pool.clone());
 
     // ── Detection pipelines (one per coin × interval) ─────────────────────────
     spawn_all_pipelines(&config.coins, pool.clone(), trade_tx.clone(), event_tx.clone());
