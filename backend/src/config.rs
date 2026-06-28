@@ -8,6 +8,10 @@ pub struct Config {
     pub port: u16,
     pub coins: Vec<String>,
     pub chart_warmup: ChartWarmupConfig,
+    /// Both fields must be set to enable Telegram alerts. Either can be absent
+    /// (e.g. in dev) and alerts will simply be disabled.
+    pub telegram_bot_token: Option<String>,
+    pub telegram_chat_id: Option<String>,
 }
 
 impl Config {
@@ -75,11 +79,16 @@ impl Config {
             ],
         };
 
+        let telegram_bot_token = std::env::var("TELEGRAM_BOT_TOKEN").ok().filter(|s| !s.is_empty());
+        let telegram_chat_id = std::env::var("TELEGRAM_CHAT_ID").ok().filter(|s| !s.is_empty());
+
         Ok(Config {
             database_url,
             port,
             coins,
             chart_warmup,
+            telegram_bot_token,
+            telegram_chat_id,
         })
     }
 }

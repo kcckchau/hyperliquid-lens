@@ -30,6 +30,8 @@ services:
       RUST_LOG: info
       PORT: "3001"
       COINS: "BTC,ETH,SOL,HYPE"
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
     depends_on:
       postgres:
         condition: service_healthy

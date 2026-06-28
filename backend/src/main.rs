@@ -1,3 +1,4 @@
+mod alert;
 mod api;
 mod backfill;
 mod chart;
@@ -16,6 +17,7 @@ use crate::api::routes::{
     get_event_stats, get_events, get_summary, get_trades, health, post_backfill, ws_events,
     ws_trades, AppState,
 };
+use crate::alert::spawn_alert_task;
 use crate::backfill::backfill_gap;
 use crate::config::Config;
 use crate::db::events::EventRepository;
@@ -119,6 +121,17 @@ async fn main() -> Result<()> {
     // ── Ingesters (one per coin) ──────────────────────────────────────────────
     for coin in &config.coins {
         spawn_coin_ingester(coin.clone(), pool.clone(), (*trade_tx).clone());
+    }
+
+    // ── Telegram alert task ───────────────────────────────────────────────────
+    match (config.telegram_bot_token.clone(), config.telegram_chat_id.clone()) {
+        (Some(token), Some(chat_id)) => {
+            info!("Telegram alerts enabled");
+            spawn_alert_task(token, chat_id, event_tx.subscribe());
+        }
+        _ => {
+            info!("Telegram alerts disabled (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set)");
+        }
     }
 
     // ── Heartbeat task ────────────────────────────────────────────────────────
