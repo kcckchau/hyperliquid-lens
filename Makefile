@@ -1,4 +1,5 @@
-.PHONY: dev-db dev-backend dev-frontend build up down logs clean
+.PHONY: dev-db dev-backend dev-frontend build up down logs clean \
+        install-service uninstall-service service-status service-logs
 
 # Start only PostgreSQL for local development
 dev-db:
@@ -54,3 +55,23 @@ backend-check:
 # Run backend tests
 backend-test:
 	cd backend && cargo test
+
+# ── macOS daemon (launchd) ──────────────────────────────────────────────────
+
+# Install as a macOS launchd service (run once; starts on every reboot/login)
+install-service:
+	bash scripts/install-service.sh
+
+# Remove the launchd service
+uninstall-service:
+	bash scripts/uninstall-service.sh
+
+# Check whether the service is loaded and running
+service-status:
+	@launchctl list | grep hyperliquid-lens \
+		&& echo "(exit code 0 = running)" \
+		|| echo "Service not found — run: make install-service"
+
+# Tail the daemon log
+service-logs:
+	tail -f ~/Library/Logs/hyperliquid-lens/daemon.log
