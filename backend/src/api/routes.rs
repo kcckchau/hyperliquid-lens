@@ -1,6 +1,7 @@
 use crate::backfill::run_backfill;
 use crate::chart::warmup::{merge_candles, ChartWarmupConfig, WarmupRequest};
 use crate::db::events::EventRepository;
+use crate::db::heartbeat::HeartbeatRepository;
 use crate::db::trades::TradeRepository;
 use crate::detection::types::MarketEvent;
 use crate::hyperliquid::info_client::fetch_candle_snapshot;
@@ -35,8 +36,42 @@ pub struct AppState {
 // Health
 // ---------------------------------------------------------------------------
 
-pub async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "status": "ok" }))
+pub async fn health(State(state): State<AppState>) -> impl IntoResponse {
+    let repo = HeartbeatRepository::new(state.pool.clone());
+    let now_ms = chrono::Utc::now().timestamp_millis();
+
+    let feeds = match repo.fetch_all().await {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|r| {
+                let lag_s = (now_ms - r.last_trade_ts_ms) / 1000;
+                let stale = lag_s > 60;
+                (
+                    r.coin,
+                    serde_json::json!({
+                        "last_trade_ts_ms": r.last_trade_ts_ms,
+                        "lag_s": lag_s,
+                        "stale": stale,
+                    }),
+                )
+            })
+            .collect::<serde_json::Map<_, _>>(),
+        Err(_) => serde_json::Map::new(),
+    };
+
+    let all_ok = feeds.values().all(|v| !v["stale"].as_bool().unwrap_or(false));
+    let status = if feeds.is_empty() {
+        "starting"
+    } else if all_ok {
+        "ok"
+    } else {
+        "degraded"
+    };
+
+    Json(serde_json::json!({
+        "status": status,
+        "feeds": feeds,
+    }))
 }
 
 // ---------------------------------------------------------------------------

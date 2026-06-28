@@ -18,6 +18,7 @@ use crate::api::routes::{
 };
 use crate::config::Config;
 use crate::db::events::EventRepository;
+use crate::db::heartbeat::HeartbeatRepository;
 use crate::db::trades::TradeRepository;
 use crate::detection::outcome_tracker::resume_pending_trackers;
 use crate::detection::pipeline::spawn_all_pipelines;
@@ -31,11 +32,13 @@ use axum::{
     Router,
 };
 use sqlx::postgres::PgPoolOptions;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
-use tracing::info;
+use tracing::{info, warn};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -70,6 +73,44 @@ async fn main() -> Result<()> {
     // ── Ingesters (one per coin) ──────────────────────────────────────────────
     for coin in &config.coins {
         spawn_coin_ingester(coin.clone(), pool.clone(), (*trade_tx).clone());
+    }
+
+    // ── Heartbeat task ────────────────────────────────────────────────────────
+    // Subscribes to the trade broadcast and writes last_trade_ts_ms per coin
+    // to system_heartbeats every 30 s. Powers the /health feed-lag check.
+    {
+        let mut rx = trade_tx.subscribe();
+        let hb_pool = pool.clone();
+        tokio::spawn(async move {
+            let repo = HeartbeatRepository::new(hb_pool);
+            let mut last_seen: HashMap<String, i64> = HashMap::new();
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    result = rx.recv() => {
+                        match result {
+                            Ok(trade) => {
+                                last_seen
+                                    .entry(trade.coin.clone())
+                                    .and_modify(|ts| *ts = (*ts).max(trade.timestamp_ms))
+                                    .or_insert(trade.timestamp_ms);
+                            }
+                            Err(broadcast::error::RecvError::Lagged(n)) => {
+                                warn!(skipped = n, "heartbeat task lagged behind trade broadcast");
+                            }
+                            Err(broadcast::error::RecvError::Closed) => break,
+                        }
+                    }
+                    _ = tick.tick() => {
+                        for (coin, ts) in &last_seen {
+                            if let Err(e) = repo.upsert(coin, *ts).await {
+                                warn!(coin, "heartbeat upsert failed: {e}");
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 
     // ── Detection pipelines (one per coin × interval) ─────────────────────────
