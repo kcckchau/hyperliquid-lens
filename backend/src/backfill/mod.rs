@@ -38,6 +38,54 @@ pub struct IntervalSummary {
     pub cascades: usize,
 }
 
+/// Fill the gap between `start_ms` and `end_ms` for one coin.
+///
+/// Called automatically on startup when heartbeats reveal the process was
+/// down. Runs concurrently alongside live ingesters — does NOT block startup.
+/// Unlike `run_backfill` this does not delete existing events; it is purely
+/// additive (the gap contains periods where no live events were recorded).
+///
+/// Silently skips gaps shorter than 2 minutes (normal reconnect jitter) and
+/// refuses to fill gaps longer than 7 days (would be slow and likely wrong).
+pub async fn backfill_gap(
+    coin: &str,
+    start_ms: i64,
+    end_ms: i64,
+    pool: PgPool,
+    event_tx: broadcast::Sender<MarketEvent>,
+) -> Result<()> {
+    let gap_s = (end_ms - start_ms) / 1000;
+    const MIN_GAP_S: i64 = 120;          // ignore short reconnect jitter
+    const MAX_GAP_S: i64 = 7 * 86_400;  // refuse gaps > 7 days
+
+    if gap_s < MIN_GAP_S {
+        return Ok(());
+    }
+    if gap_s > MAX_GAP_S {
+        warn!(
+            coin,
+            gap_hours = gap_s / 3600,
+            "Gap exceeds 7 days — skipping automatic backfill. Run manual backfill if needed."
+        );
+        return Ok(());
+    }
+
+    info!(coin, gap_hours = gap_s / 3600, start_ms, end_ms, "Filling startup gap");
+
+    let repo = EventRepository::new(pool.clone());
+
+    for cfg in all_configs() {
+        if let Err(e) =
+            run_interval_backfill(coin, start_ms, end_ms, &cfg, &pool, &repo, &event_tx).await
+        {
+            warn!(coin, interval = cfg.label, error = %e, "Gap backfill interval failed");
+        }
+    }
+
+    info!(coin, "Startup gap fill complete");
+    Ok(())
+}
+
 /// Run detection over a full UTC day for one coin.
 ///
 /// For each supported interval:
@@ -129,7 +177,7 @@ pub async fn run_backfill(
 // Per-interval runner
 // ---------------------------------------------------------------------------
 
-async fn run_interval_backfill(
+pub(crate) async fn run_interval_backfill(
     coin: &str,
     start_ms: i64,
     end_ms: i64,

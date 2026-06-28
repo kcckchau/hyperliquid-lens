@@ -16,6 +16,7 @@ use crate::api::routes::{
     get_event_stats, get_events, get_summary, get_trades, health, post_backfill, ws_events,
     ws_trades, AppState,
 };
+use crate::backfill::backfill_gap;
 use crate::config::Config;
 use crate::db::events::EventRepository;
 use crate::db::heartbeat::HeartbeatRepository;
@@ -61,6 +62,12 @@ async fn main() -> Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     info!("Database migrations applied");
 
+    // ── Startup gap detection ─────────────────────────────────────────────────
+    // Check heartbeats from the previous run. If any coin has a gap > 2 min,
+    // fire backfill concurrently. We do this BEFORE spawning live ingesters so
+    // the event channel exists when gap fill tries to broadcast.
+    // (The broadcast channel is created just below; gap tasks are spawned after.)
+
     // ── Broadcast channels ────────────────────────────────────────────────────
     let (trade_tx, _) = broadcast::channel::<Trade>(1024);
     let trade_tx = Arc::new(trade_tx);
@@ -69,6 +76,45 @@ async fn main() -> Result<()> {
     // Buffer is larger because events are rarer but clients may subscribe late.
     let (event_tx, _) = broadcast::channel::<MarketEvent>(256);
     let event_tx = Arc::new(event_tx);
+
+    // ── Startup gap fill (concurrent, non-blocking) ───────────────────────────
+    {
+        let hb_repo = HeartbeatRepository::new(pool.clone());
+        let now_ms = chrono::Utc::now().timestamp_millis();
+
+        match hb_repo.fetch_all().await {
+            Ok(heartbeats) if !heartbeats.is_empty() => {
+                for hb in heartbeats {
+                    let gap_s = (now_ms - hb.last_trade_ts_ms) / 1000;
+                    if gap_s < 120 {
+                        continue; // normal — no gap
+                    }
+                    info!(
+                        coin = %hb.coin,
+                        gap_hours = gap_s / 3600,
+                        "Detected startup gap — spawning backfill"
+                    );
+                    let gap_pool = pool.clone();
+                    let gap_event_tx = (*event_tx).clone();
+                    let coin = hb.coin.clone();
+                    let start_ms = hb.last_trade_ts_ms;
+                    tokio::spawn(async move {
+                        if let Err(e) =
+                            backfill_gap(&coin, start_ms, now_ms, gap_pool, gap_event_tx).await
+                        {
+                            warn!(coin, "Startup gap fill failed: {e}");
+                        }
+                    });
+                }
+            }
+            Ok(_) => {
+                info!("No heartbeats found — first run, skipping gap check");
+            }
+            Err(e) => {
+                warn!("Could not read heartbeats for gap check: {e}");
+            }
+        }
+    }
 
     // ── Ingesters (one per coin) ──────────────────────────────────────────────
     for coin in &config.coins {
